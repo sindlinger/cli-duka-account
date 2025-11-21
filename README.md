@@ -51,6 +51,7 @@ DEMO_PHONE_NUMBER=11999999999
 - `--browser firefox|chromium` : escolhe navegador Playwright.
 - `--lookback N` : quantas últimas mensagens analisar (default 500).
 - `--quiet` : oculta logs de etapa, mostra só resultado.
+- `--headless` combina bem com uso em CI/cron.
 
 ## Saída esperada
 ```
@@ -61,3 +62,14 @@ Também imprime um bloco detalhado com login, senha, enviado/expira e tempo rest
 ## Notas
 - O lookback pode ser aumentado se o e-mail estiver mais antigo: `--lookback 1000`.
 - Para Gmail arquivado, pode apontar `MAIL_BOX="[Gmail]/All Mail"`.
+- Para Gmail com 2FA, use uma “app password” de 16 dígitos em `GMAIL_PASSWORD`/`MAIL_PASS`.
+
+## Dicas rápidas
+- WSL + X410: se precisar de UI, rode sem `--headless`. Para headless, não requer X.
+- Se só quiser e-mail, use `cli-demo-account mail` para não acionar o site.
+- Logs mostram cada etapa; `--quiet` reduz a saída a apenas credenciais/resumo.
+
+## Problemas comuns
+- “Nenhuma mensagem…”: aumente `--lookback` (ex.: 2000) ou use `MAIL_BOX="[Gmail]/All Mail"`.
+- CAPTCHA no site pode aparecer após muitas tentativas; script salva `captcha.png` e pede input.
+- Se o Playwright não abrir no Windows, garanta que o `npm install` foi rodado também no Windows (não só no WSL).
