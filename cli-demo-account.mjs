@@ -24,6 +24,7 @@ let saveLastMail = process.env.SAVE_LAST_MAIL === 'true';
 let quiet = false;             // suprime logs de etapa
 let lookback = process.env.MAIL_LOOKBACK ? Number(process.env.MAIL_LOOKBACK) : 500; // quantas mensagens olhar a partir do fim
 let fromUid = process.env.MAIL_FROM_UID ? Number(process.env.MAIL_FROM_UID) : null; // força início por UID (desaconselhado no modo mail-only)
+let showHelp = false;
 
 // cores simples
 const useColor = process.stdout.isTTY;
@@ -37,6 +38,7 @@ const color = {
 
 if (cliArgs.includes('mail')) mailOnly = true;
 if (cliArgs.includes('run')) mailOnly = false;
+if (cliArgs.includes('-h') || cliArgs.includes('--help')) showHelp = true;
 
 cliArgs.forEach((arg, idx) => {
   if (arg === '--mail-only') mailOnly = true;
@@ -49,6 +51,24 @@ cliArgs.forEach((arg, idx) => {
   if (arg === '--from-uid' && cliArgs[idx + 1]) fromUid = Number(cliArgs[idx + 1]);
 });
 // ---------------------------
+
+if (showHelp) {
+  console.log(`Uso: cli-demo-account [run|mail] [opções]\n\n` +
+    `Subcomandos:\n` +
+    `  run (padrão)   Preenche formulário + lê e-mail\n` +
+    `  mail           Só lê e-mail (skip formulário)\n\n` +
+    `Opções:\n` +
+    `  --mail-only          Igual a 'mail'\n` +
+    `  --headless           Força headless\n` +
+    `  --no-headless        Força com janela\n` +
+    `  --browser [firefox|chromium]\n` +
+    `  --quiet              Suprime logs de etapa\n` +
+    `  --save-mail          Salva last-mail.eml\n` +
+    `  --lookback N         Mensagens recentes a varrer (default ${lookback})\n` +
+    `  --from-uid N         Força UID inicial (IMAP)\n` +
+    `  -h, --help           Mostra esta ajuda\n`);
+  process.exit(0);
+}
 
 const cfg = {
   firstName: process.env.DEMO_FIRST_NAME ?? 'SeuNome',
@@ -189,9 +209,13 @@ async function solveCaptcha(page) {
 }
 
 const userMessages = []; // coletar saídas finais amigáveis
-
 async function parseAndReport(text, envelope) {
-  const clean = text
+
+  const decoded = text
+    .replace(/=\r?\n/g, '')
+    .replace(/=([0-9A-F]{2})/gi, (_, h) => String.fromCharCode(parseInt(h, 16)));
+
+  const clean = decoded
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
@@ -200,65 +224,47 @@ async function parseAndReport(text, envelope) {
     .replace(/[ \t]+/g, ' ')
     .trim();
 
-  const loginRe = /\bDEMO[0-9A-Za-z]+\b/g;
-  const passRe = /\b(?:Password|Senha)\s*[:：]?\s*([0-9A-Za-z]{4,12})/gi;
-  const loginGenericRe = /login\s*[:：]?\s*([0-9A-Za-z._-]+)/gi;
-
-  const logins = [];
-  const passes = [];
-  let m;
-  while ((m = loginRe.exec(clean))) logins.push(m[0]);
-  while ((m = passRe.exec(clean))) passes.push(m[1]);
-  while ((m = loginGenericRe.exec(clean))) logins.push(m[1]);
+  // Blocos específicos: JForex, MT5, MT4
+  const jfx = clean.match(/JForex\s*4[^]*?Login:\s*([^\s]+)[\s\n]+Password:\s*([^\s]+)/i);
+  const mt5 = clean.match(/MetaTrader\s*5[^]*?Login:\s*([^\s]+)[\s\n]+Password:\s*([^\s]+)[\s\n]+[^\n]*Server[^:]*:\s*([A-Za-z0-9._-]+)/i);
+  const mt4 = clean.match(/MetaTrader\s*4[^]*?Login:\s*([^\s]+)[\s\n]+Password:\s*([^\s]+)[\s\n]+[^\n]*Server[^:]*:\s*([A-Za-z0-9._-]+)/i);
 
   const sentDate = envelope?.date ? new Date(envelope.date) : new Date();
   const expiry = new Date(sentDate.getTime() + 14 * 24 * 60 * 60 * 1000);
-  const remainingMs = expiry.getTime() - Date.now();
-  const remainingDays = Math.max(0, remainingMs / (1000 * 60 * 60 * 24));
-  const remainingHours = Math.max(0, remainingMs / (1000 * 60 * 60));
+  const remainingDays = Math.max(0, (expiry.getTime() - Date.now()) / 86400000);
+  const remainingHours = Math.max(0, (expiry.getTime() - Date.now()) / 3600000);
 
-  const humanLine = (prefix, extra = '') =>
-    `${prefix} | login: ${logins[0] || '(não encontrado)'} | senha: ${
-      passes[0] || '(não encontrado)'
-    } | enviado: ${sentDate.toISOString()} | expira: ${expiry.toISOString()} | resta: ${remainingDays.toFixed(
-      1
-    )} dias (${remainingHours.toFixed(1)}h)${extra}`;
-  const pretty = (prefix) => [
-    prefix,
-    `  ${color.cyan('login ')}: ${color.bold(logins[0] || '(não encontrado)')}`,
-    `  ${color.cyan('senha ')}: ${color.bold(passes[0] || '(não encontrado)')}`,
-    `  ${color.cyan('enviado')}: ${sentDate.toISOString()}`,
-    `  ${color.cyan('expira ')}: ${expiry.toISOString()}`,
-    `  ${color.cyan('resta  ')}: ${remainingDays.toFixed(1)} dias (${remainingHours.toFixed(1)}h)`,
-  ].join('\n');
-
-  const headerSuccess = color.green(color.bold('CREDENCIAIS ENCONTRADAS'));
-  const headerLogin = color.cyan('LOGIN ENCONTRADO (senha ausente)');
-  const headerPass = color.cyan('SENHA ENCONTRADA (login ausente)');
-
-  if (logins.length && passes.length) {
-    const line = humanLine(headerSuccess);
-    const block = pretty(headerSuccess);
-    console.log(line);
+  function printBlock(title, login, pass, server = '') {
+    const block = [
+      color.green(color.bold(title)),
+      `  ${color.cyan('login ')}: ${color.bold(login)}`,
+      `  ${color.cyan('senha ')}: ${color.bold(pass)}`,
+      server ? `  ${color.cyan('servidor')}: ${server}` : null,
+      `  ${color.cyan('enviado')}: ${sentDate.toISOString()}`,
+      `  ${color.cyan('expira ')}: ${expiry.toISOString()}`,
+      `  ${color.cyan('resta  ')}: ${remainingDays.toFixed(1)} dias (${remainingHours.toFixed(1)}h)`,
+    ]
+      .filter(Boolean)
+      .join('\n');
     console.log(block);
-    userMessages.push(line, block);
-    return true;
-  } else if (logins.length) {
-    const line = humanLine(headerLogin);
-    const block = pretty(headerLogin);
-    console.log(line);
-    console.log(block);
-    userMessages.push(line, block);
-    return true;
-  } else if (passes.length) {
-    const line = humanLine(headerPass);
-    const block = pretty(headerPass);
-    console.log(line);
-    console.log(block);
-    userMessages.push(line, block);
-    return true;
+    userMessages.push(block);
   }
-  return false;
+
+  let any = false;
+  if (jfx) {
+    any = true;
+    printBlock('CREDENCIAIS JFOREX', jfx[1], jfx[2]);
+  }
+  if (mt5) {
+    any = true;
+    printBlock('CREDENCIAIS MT5', mt5[1], mt5[2], mt5[3]);
+  }
+  if (mt4) {
+    any = true;
+    printBlock('CREDENCIAIS MT4', mt4[1], mt4[2], mt4[3]);
+  }
+
+  return any;
 }
 
 async function readMail(startUid = null) {
@@ -421,7 +427,7 @@ async function main() {
       ? true
       : process.env.HEADLESS === 'false'
       ? false
-      : false; // padrão: mostrar janela (ajuda no X410)
+      : true; // padrão agora headless
 
   const launchArgs = [
     '--disable-gpu',
